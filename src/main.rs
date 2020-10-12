@@ -1,8 +1,7 @@
-extern crate protobuf;
-
 use protobuf::Message;
 
 mod proto;
+mod secret;
 
 fn main() {
 	let mut secretbox_key = proto::key::SecretboxKey::new();
@@ -15,9 +14,10 @@ fn main() {
 
 	let mut vec = Vec::<u8>::new();
 	let mut stream = protobuf::CodedOutputStream::vec(&mut vec);
-	key.write_to(&mut stream).expect("Couldn't write key to stream");
+	key.write_to(&mut stream)
+		.expect("Couldn't write key to stream");
 	stream.flush().expect("Couldn't flush stream to vec");
 
-    println!("Hello, harpoxide!");
-    println!("key = {:?}", vec)
+	println!("Hello, harpoxide!");
+	println!("key = {:?}", vec)
 }

@@ -4,10 +4,11 @@ version = "0.1.0"
 authors = ["Brandon Pitman <brandon.pitman@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 protobuf = "2"
+scrypt = { version = "0.4", default-features = false }
+simple-error = "0.2"
+sodiumoxide = "0.2"
 
 [build-dependencies]
 protoc-rust = "2"

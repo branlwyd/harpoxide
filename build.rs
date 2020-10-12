@@ -3,7 +3,7 @@ extern crate protoc_rust;
 use std::fs;
 
 fn main() {
-	fs::create_dir_all("src/proto/secret")
+	fs::create_dir_all("src/proto")
 		.expect("Creating src/proto failed.");
 
 	protoc_rust::Codegen::new()
