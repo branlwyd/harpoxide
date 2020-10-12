@@ -1,9 +1,12 @@
 use protobuf::Message;
+use sodiumoxide;
 
 mod proto;
 mod secret;
 
 fn main() {
+	sodiumoxide::init().unwrap();
+
 	let mut secretbox_key = proto::key::SecretboxKey::new();
 	secretbox_key.n = 11;
 	secretbox_key.r = 21;

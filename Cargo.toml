@@ -9,6 +9,8 @@ protobuf = "2"
 scrypt = { version = "0.4", default-features = false }
 simple-error = "0.2"
 sodiumoxide = "0.2"
+tempfile = "3"
+walkdir = "2"
 
 [build-dependencies]
 protoc-rust = "2"
