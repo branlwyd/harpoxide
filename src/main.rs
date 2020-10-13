@@ -1,5 +1,9 @@
-use protobuf::Message;
+use std::fs::File;
+
+use protobuf;
 use sodiumoxide;
+
+use crate::proto::key::Key;
 
 mod proto;
 mod secret;
@@ -7,20 +11,13 @@ mod secret;
 fn main() {
 	sodiumoxide::init().unwrap();
 
-	let mut secretbox_key = proto::key::SecretboxKey::new();
-	secretbox_key.n = 11;
-	secretbox_key.r = 21;
-	secretbox_key.p = 31;
-
-	let mut key = proto::key::Key::new();
-	key.set_secretbox_key(secretbox_key);
-
-	let mut vec = Vec::<u8>::new();
-	let mut stream = protobuf::CodedOutputStream::vec(&mut vec);
-	key.write_to(&mut stream)
-		.expect("Couldn't write key to stream");
-	stream.flush().expect("Couldn't flush stream to vec");
-
-	println!("Hello, harpoxide!");
-	println!("key = {:?}", vec)
+	let key: Key = {
+		let mut f = File::open("key.sbox").unwrap();
+		protobuf::parse_from_reader(&mut f).unwrap()
+	};
+	let vault = secret::new_vault("./passwords.sbox", key).unwrap();
+	let store = vault.unlock("password").unwrap();
+	for entry in store.list().unwrap() {
+		println!("{}\n===\n{}===\n\n", entry, store.get(&entry).unwrap());
+	}
 }

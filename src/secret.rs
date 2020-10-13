@@ -1,5 +1,5 @@
-use std::fs::File;
-use std::path::PathBuf;
+use std::fs::{create_dir_all, remove_dir, remove_file, File};
+use std::path::{Component, Path, PathBuf};
 
 use protobuf;
 use protobuf::Message;
@@ -44,11 +44,17 @@ pub trait Store {
 	fn delete(&self, entry: &str) -> Result<(), SimpleError>;
 }
 
-pub fn new_vault(location: &str, key: Key) -> Result<Box<dyn Vault>, SimpleError> {
+// Creates a new Vault with the given (locked) `key`, using (encrypted) entry
+// data from the given `location`.
+pub fn new_vault<P: AsRef<Path>>(location: P, key: Key) -> Result<Box<dyn Vault>, SimpleError> {
+	let loc = match PathBuf::from(location.as_ref()).canonicalize() {
+		Ok(loc) => loc,
+		Err(err) => bail!("bad location: {}", err),
+	};
 	match key.key {
 		None => bail!("empty key"),
 		Some(Key_oneof_key::secretbox_key(sbox_key)) => Ok(Box::new(SecretboxVault {
-			location: location.to_string(),
+			location: loc,
 			key: sbox_key,
 		})),
 		_ => bail!("unimplemented key type"),
@@ -56,7 +62,7 @@ pub fn new_vault(location: &str, key: Key) -> Result<Box<dyn Vault>, SimpleError
 }
 
 struct SecretboxVault {
-	location: String,
+	location: PathBuf,
 	key: SecretboxKey,
 }
 
@@ -106,7 +112,7 @@ impl Vault for SecretboxVault {
 }
 
 struct SecretboxStore {
-	location: String,
+	location: PathBuf,
 	key: secretbox::Key,
 }
 
@@ -116,7 +122,11 @@ impl Store for SecretboxStore {
 		for entry in WalkDir::new(&self.location) {
 			let entry = match entry {
 				Ok(entry) => entry,
-				Err(err) => bail!("couldn't walk directory {}: {}", self.location, err),
+				Err(err) => bail!(
+					"couldn't walk directory {}: {}",
+					self.location.display(),
+					err
+				),
 			};
 			if !entry.file_type().is_file() {
 				continue;
@@ -127,12 +137,18 @@ impl Store for SecretboxStore {
 			}
 			path = match path.strip_prefix(&self.location) {
 				Ok(p) => p.with_extension(""),
-				Err(err) => bail!("couldn't strip prefix from {}: {}", self.location, err),
+				Err(err) => bail!(
+					"couldn't strip prefix from {}: {}",
+					self.location.display(),
+					err
+				),
 			};
+			let mut entry_name = String::from("/");
 			match path.into_os_string().into_string() {
-				Ok(s) => result.push(s),
+				Ok(s) => entry_name.push_str(&s),
 				Err(s) => bail!("couldn't convert path to string: {:?}", s),
 			};
+			result.push(entry_name);
 		}
 		Ok(result)
 	}
@@ -140,7 +156,7 @@ impl Store for SecretboxStore {
 	fn get(&self, entry: &str) -> Result<String, SimpleError> {
 		// Read entry content from disk.
 		let e: Entry = {
-			let filename = self.filename_for_entry(entry);
+			let filename = self.filename_for_entry(entry)?;
 			let mut f = match File::open(filename) {
 				Ok(f) => f,
 				Err(err) => bail!("entry {} couldn't be opened: {}", entry, err),
@@ -176,7 +192,12 @@ impl Store for SecretboxStore {
 		e.mut_nonce().extend(nonce.as_ref());
 
 		// Atomically write the new file content.
-		let filename = self.filename_for_entry(entry);
+		let filename = self.filename_for_entry(entry)?;
+		if let Some(dir) = filename.parent() {
+			if let Err(err) = create_dir_all(dir) {
+				bail!("couldn't create dir {}: {}", dir.display(), err);
+			}
+		}
 		let path = require_with!(filename.parent(), "entry {} has no parent", entry);
 		let mut temp_file = match tempfile::NamedTempFile::new_in(path) {
 			Ok(temp_file) => temp_file,
@@ -192,20 +213,45 @@ impl Store for SecretboxStore {
 	}
 
 	fn delete(&self, entry: &str) -> Result<(), SimpleError> {
-		let filename = self.filename_for_entry(entry);
-		if let Err(err) = std::fs::remove_file(filename) {
+		// Delete file for entry.
+		let filename = self.filename_for_entry(entry)?;
+		if let Err(err) = remove_file(&filename) {
 			bail!("entry {} couldn't be removed: {}", entry, err);
 		}
-		// TODO: clean up newly-empty dirs
+
+		// Clean up any newly-empty directories.
+		for anc in filename.ancestors().skip(1) {
+			if anc == &self.location {
+				break; // Never delete the base directory of the store.
+			}
+			let mut it = match anc.read_dir() {
+				Ok(it) => it,
+				Err(err) => bail!("couldn't read dir {}: {}", anc.display(), err),
+			};
+			if !it.next().is_none() {
+				break; // Directory is not empty.
+			}
+			if let Err(err) = remove_dir(anc) {
+				bail!("couldn't delete empty dir {}: {}", anc.display(), err);
+			}
+		}
 		Ok(())
 	}
 }
 
 impl SecretboxStore {
-	fn filename_for_entry(&self, entry: &str) -> PathBuf {
-		// TODO: protect against path traversal
-		let mut pb = PathBuf::from(&self.location).join(entry);
+	fn filename_for_entry(&self, entry: &str) -> Result<PathBuf, SimpleError> {
+		if !entry.starts_with("/") {
+			bail!("invalid entry name: {}", entry)
+		}
+		let mut pb = PathBuf::from(&self.location);
+		pb.push(&entry[1..]);
 		pb.set_extension(FILE_EXTENSION);
-		pb
+		for c in pb.components() {
+			if c == Component::ParentDir {
+				bail!("invalid entry name: {}", entry)
+			}
+		}
+		Ok(pb)
 	}
 }
