@@ -38,7 +38,7 @@ impl Handler {
                     id: v.key().clone(),
                     store: store,
                 });
-                v.insert(sess.clone());
+                v.insert(Arc::clone(&sess));
                 return Ok(sess);
             }
         }
