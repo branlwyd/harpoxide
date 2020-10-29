@@ -8,6 +8,7 @@ use crate::secret::Vault;
 
 mod proto;
 mod secret;
+mod session;
 
 fn main() {
 	sodiumoxide::init().unwrap();
