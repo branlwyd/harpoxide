@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use base64;
 use rand::{thread_rng, Rng};
 
 use crate::secret;
@@ -11,7 +12,6 @@ use crate::secret;
 // TODO: authenticated-paths support
 // TODO: MFA (webauthn) support
 // TODO: rate-limiting of session creation
-// TODO: ID base64 support (display trait? also need to parse from base64)
 
 pub struct Handler {
     vault: secret::Vault,
@@ -71,8 +71,9 @@ impl Session {
 }
 
 const ID_LENGTH: usize = 32;
+const ENCODED_ID_LENGTH: usize = 43; // 4 * ceil(ID_LENGTH / 3)
 
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ID([u8; ID_LENGTH]);
 
 impl ID {
@@ -80,12 +81,35 @@ impl ID {
         ID(thread_rng().gen::<[u8; ID_LENGTH]>())
     }
 
-    pub fn from_slice(s: &[u8]) -> Option<ID> {
-        if s.len() != ID_LENGTH {
+    pub fn from_string<T: AsRef<[u8]>>(s: T) -> Option<ID> {
+        let s = s.as_ref();
+        if s.len() != ENCODED_ID_LENGTH {
             return None;
         }
         let mut id = ID([0; ID_LENGTH]);
-        id.0.copy_from_slice(s);
+        if base64::decode_config_slice(s, base64::URL_SAFE_NO_PAD, &mut id.0[..]).is_err() {
+            return None;
+        }
         Some(id)
+    }
+
+    pub fn to_string(&self) -> String {
+        base64::encode_config(self.0, base64::URL_SAFE_NO_PAD)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ID;
+
+    #[test]
+    fn id_generation() {
+        assert_ne!(ID::new(), ID::new());
+    }
+
+    #[test]
+    fn id_string_conversion() {
+        let id = ID::new();
+        assert_eq!(ID::from_string(id.to_string()), Some(id));
     }
 }
