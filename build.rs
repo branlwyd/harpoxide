@@ -15,7 +15,11 @@ fn main() {
 
 	protoc_rust::Codegen::new()
 		.out_dir("src/proto")
-		.inputs(&["proto/secret/entry.proto", "proto/secret/key.proto"])
+		.inputs(&[
+			"proto/harpd/config.proto",
+			"proto/secret/entry.proto",
+			"proto/secret/key.proto",
+		])
 		.include("proto")
 		.customize(protoc_rust::Customize {
 			gen_mod_rs: Some(true),

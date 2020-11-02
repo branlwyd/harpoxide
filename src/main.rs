@@ -6,6 +6,7 @@ use sodiumoxide;
 use crate::proto::key::Key;
 use crate::secret::Vault;
 
+mod config;
 mod proto;
 mod secret;
 mod session;
