@@ -236,6 +236,16 @@ mod tests {
         assert_causes_parse_error(Config::clear_key_file);
 
         assert_causes_parse_error(|c| c.set_alert_cmd(String::from("alert_cmd value")));
+
+        assert_causes_parse_error(|c| c.set_session_duration_s(-1.0));
+        assert_causes_parse_error(|c| c.set_session_duration_s(f64::NAN));
+        assert_causes_parse_error(|c| c.set_session_duration_s(f64::INFINITY));
+        assert_causes_parse_error(|c| c.set_session_duration_s(f64::NEG_INFINITY));
+
+        assert_causes_parse_error(|c| c.set_new_session_rate(-1.0));
+        assert_causes_parse_error(|c| c.set_new_session_rate(f64::NAN));
+        assert_causes_parse_error(|c| c.set_new_session_rate(f64::INFINITY));
+        assert_causes_parse_error(|c| c.set_new_session_rate(f64::NEG_INFINITY));
     }
 
     fn assert_causes_parse_error<F: Fn(&mut proto::config::Config)>(f: F) {
