@@ -1,11 +1,11 @@
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use lazy_static::lazy_static;
-
 use crate::proto;
+use lazy_static::lazy_static;
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 // TODO: parse config fields (host_name, mfa_regs) into more useful types when building Config
 
@@ -89,80 +89,80 @@ impl Config {
 
     fn from_pb(mut cfg_pb: proto::config::Config) -> io::Result<Config> {
         // Check fields of cfg_pb.
-        if cfg_pb.get_host_name().is_empty() {
+        if cfg_pb.host_name.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "host_name is required",
             ));
         }
 
-        if cfg_pb.get_email().is_empty() {
+        if cfg_pb.email.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "email is required",
             ));
         }
 
-        if cfg_pb.get_cert_dir().is_empty() {
+        if cfg_pb.cert_dir.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "cert_dir is required",
             ));
         }
 
-        if cfg_pb.get_pass_loc().is_empty() {
+        if cfg_pb.pass_loc.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "pass_loc is required",
             ));
         }
 
-        if cfg_pb.get_key_file().is_empty() {
+        if cfg_pb.key_file.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "key_file is required",
             ));
         }
 
-        if !cfg_pb.get_alert_cmd().is_empty() {
+        if !cfg_pb.alert_cmd.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "alert_cmd is unimplemented",
             ));
         }
 
-        if !cfg_pb.get_session_duration_s().is_finite() || cfg_pb.get_session_duration_s() < 0.0 {
+        if !cfg_pb.session_duration_s.is_finite() || cfg_pb.session_duration_s < 0.0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "session_duration_s must be positive",
             ));
         }
-        let sess_dur = if cfg_pb.get_session_duration_s() > 0.0 {
-            Duration::from_secs_f64(cfg_pb.get_session_duration_s())
+        let sess_dur = if cfg_pb.session_duration_s > 0.0 {
+            Duration::from_secs_f64(cfg_pb.session_duration_s)
         } else {
             DEFAULT_SESSION_DURATION
         };
 
-        if !cfg_pb.get_new_session_rate().is_finite() || cfg_pb.get_new_session_rate() < 0.0 {
+        if !cfg_pb.new_session_rate.is_finite() || cfg_pb.new_session_rate < 0.0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "new_session_rate must be positive",
             ));
         }
-        let sess_creation_rate = if cfg_pb.get_new_session_rate() > 0.0 {
-            cfg_pb.get_new_session_rate()
+        let sess_creation_rate = if cfg_pb.new_session_rate > 0.0 {
+            cfg_pb.new_session_rate
         } else {
             DEFAULT_SESSION_CREATION_RATE
         };
 
         // Return the new config.
         Ok(Config {
-            host_name: cfg_pb.take_host_name(),
-            email: cfg_pb.take_email(),
-            cert_dir: PathBuf::from(cfg_pb.take_cert_dir()),
-            password_loc: PathBuf::from(cfg_pb.take_pass_loc()),
-            key_file: PathBuf::from(cfg_pb.take_key_file()),
-            mfa_regs: cfg_pb.take_mfa_reg().into_vec(),
+            host_name: cfg_pb.host_name,
+            email: cfg_pb.email,
+            cert_dir: PathBuf::from(cfg_pb.cert_dir),
+            password_loc: PathBuf::from(cfg_pb.pass_loc),
+            key_file: PathBuf::from(cfg_pb.key_file),
+            mfa_regs: cfg_pb.mfa_reg,
             session_duration: sess_dur,
             session_creation_rate: sess_creation_rate,
         })
@@ -171,56 +171,51 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-    use std::path::Path;
-    use std::time::Duration;
-
-    use lazy_static::lazy_static;
-
-    use crate::proto;
-
     use super::{Config, DEFAULT_SESSION_CREATION_RATE, DEFAULT_SESSION_DURATION};
+    use crate::proto;
+    use lazy_static::lazy_static;
+    use std::{io, path::Path, time::Duration};
 
     lazy_static! {
         static ref CONFIG_PB: proto::config::Config = {
-            let mut cfg = proto::config::Config::new();
-            cfg.set_host_name(String::from("host_name value"));
-            cfg.set_email(String::from("email value"));
-            cfg.set_cert_dir(String::from("cert_dir value"));
-            cfg.set_pass_loc(String::from("pass_loc value"));
-            cfg.set_key_file(String::from("key_file value"));
-            cfg.mut_mfa_reg().push(String::from("mfa_reg value 0"));
-            cfg.mut_mfa_reg().push(String::from("mfa_reg value 1"));
-            cfg.set_session_duration_s(45.3);
-            cfg.set_new_session_rate(2.5);
-            cfg
+            proto::config::Config {
+                host_name: String::from("host_name value"),
+                email: String::from("email value"),
+                cert_dir: String::from("cert_dir value"),
+                pass_loc: String::from("pass_loc value"),
+                key_file: String::from("key_file value"),
+                mfa_reg: Vec::from([
+                    String::from("mfa_reg value 0"),
+                    String::from("mfa_reg value 1"),
+                ]),
+                session_duration_s: 45.3,
+                new_session_rate: 2.5,
+                ..Default::default()
+            }
         };
     }
 
     #[test]
     fn from_pb() {
         let cfg = Config::from_pb(CONFIG_PB.clone()).unwrap();
-        assert_eq!(cfg.host_name(), CONFIG_PB.get_host_name());
-        assert_eq!(cfg.email(), CONFIG_PB.get_email());
-        assert_eq!(cfg.certificate_dir(), Path::new(CONFIG_PB.get_cert_dir()));
-        assert_eq!(cfg.password_location(), Path::new(CONFIG_PB.get_pass_loc()));
-        assert_eq!(cfg.key_file(), Path::new(CONFIG_PB.get_key_file()));
-        assert_eq!(cfg.mfa_registrations(), CONFIG_PB.get_mfa_reg());
+        assert_eq!(cfg.host_name(), CONFIG_PB.host_name);
+        assert_eq!(cfg.email(), CONFIG_PB.email);
+        assert_eq!(cfg.certificate_dir(), Path::new(&CONFIG_PB.cert_dir));
+        assert_eq!(cfg.password_location(), Path::new(&CONFIG_PB.pass_loc));
+        assert_eq!(cfg.key_file(), Path::new(&CONFIG_PB.key_file));
+        assert_eq!(cfg.mfa_registrations(), CONFIG_PB.mfa_reg);
         assert_eq!(
             cfg.session_duration(),
-            Duration::from_secs_f64(CONFIG_PB.get_session_duration_s())
+            Duration::from_secs_f64(CONFIG_PB.session_duration_s)
         );
-        assert_eq!(
-            cfg.session_creation_rate(),
-            CONFIG_PB.get_new_session_rate()
-        );
+        assert_eq!(cfg.session_creation_rate(), CONFIG_PB.new_session_rate);
     }
 
     #[test]
     fn from_pb_defaults() {
         let mut cfg_pb = CONFIG_PB.clone();
-        cfg_pb.clear_session_duration_s();
-        cfg_pb.clear_new_session_rate();
+        cfg_pb.session_duration_s = 0.0;
+        cfg_pb.new_session_rate = 0.0;
         let cfg = Config::from_pb(cfg_pb).unwrap();
         assert_eq!(cfg.session_duration(), DEFAULT_SESSION_DURATION);
         assert_eq!(cfg.session_creation_rate(), DEFAULT_SESSION_CREATION_RATE);
@@ -228,24 +223,23 @@ mod tests {
 
     #[test]
     fn from_pb_sanity_checking() {
-        use proto::config::Config;
-        assert_causes_parse_error(Config::clear_host_name);
-        assert_causes_parse_error(Config::clear_email);
-        assert_causes_parse_error(Config::clear_cert_dir);
-        assert_causes_parse_error(Config::clear_pass_loc);
-        assert_causes_parse_error(Config::clear_key_file);
+        assert_causes_parse_error(|c| c.host_name = String::new());
+        assert_causes_parse_error(|c| c.email = String::new());
+        assert_causes_parse_error(|c| c.cert_dir = String::new());
+        assert_causes_parse_error(|c| c.pass_loc = String::new());
+        assert_causes_parse_error(|c| c.key_file = String::new());
 
-        assert_causes_parse_error(|c| c.set_alert_cmd(String::from("alert_cmd value")));
+        assert_causes_parse_error(|c| c.alert_cmd = String::from("alert_cmd value"));
 
-        assert_causes_parse_error(|c| c.set_session_duration_s(-1.0));
-        assert_causes_parse_error(|c| c.set_session_duration_s(f64::NAN));
-        assert_causes_parse_error(|c| c.set_session_duration_s(f64::INFINITY));
-        assert_causes_parse_error(|c| c.set_session_duration_s(f64::NEG_INFINITY));
+        assert_causes_parse_error(|c| c.session_duration_s = -1.0);
+        assert_causes_parse_error(|c| c.session_duration_s = f64::NAN);
+        assert_causes_parse_error(|c| c.session_duration_s = f64::INFINITY);
+        assert_causes_parse_error(|c| c.session_duration_s = f64::NEG_INFINITY);
 
-        assert_causes_parse_error(|c| c.set_new_session_rate(-1.0));
-        assert_causes_parse_error(|c| c.set_new_session_rate(f64::NAN));
-        assert_causes_parse_error(|c| c.set_new_session_rate(f64::INFINITY));
-        assert_causes_parse_error(|c| c.set_new_session_rate(f64::NEG_INFINITY));
+        assert_causes_parse_error(|c| c.new_session_rate = -1.0);
+        assert_causes_parse_error(|c| c.new_session_rate = f64::NAN);
+        assert_causes_parse_error(|c| c.new_session_rate = f64::INFINITY);
+        assert_causes_parse_error(|c| c.new_session_rate = f64::NEG_INFINITY);
     }
 
     fn assert_causes_parse_error<F: Fn(&mut proto::config::Config)>(f: F) {

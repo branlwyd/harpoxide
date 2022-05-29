@@ -1,21 +1,21 @@
 [package]
 name = "harpoxide"
 version = "0.1.0"
-authors = ["Brandon Pitman <brandon.pitman@gmail.com>"]
-edition = "2018"
+authors = ["Brandon Pitman <bran@bran.land>"]
+edition = "2021"
 
 [dependencies]
-base64 = "0.13"
-lazy_static = "1.1"
-protobuf = "2"
-rand = "0.7"
-scrypt = { version = "0.5", default-features = false }
-sodiumoxide = "0.2"
+base64 = "0.13.0"
+lazy_static = "1"
+protobuf = "3"
+rand = "0.8.5"
+scrypt = { version = "0.10.0", default-features = false }
+sodiumoxide = "0.2.7"
 tempfile = "3"
 walkdir = "2"
 
 [dev-dependencies]
-tempdir = "0.3"
+tempdir = "0.3.7"
 
 [build-dependencies]
-protoc-rust = "2"
+protobuf-codegen = "3"
