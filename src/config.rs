@@ -44,7 +44,8 @@ impl Config {
     /// Sets the current config by parsing a config from the given reader.
     /// Any existing config is replaced on success.
     pub fn set_from_pb(cfg_pb: proto::config::Config) -> io::Result<()> {
-        Ok(Config::set(Config::from_pb(cfg_pb)?))
+        Config::set(Config::from_pb(cfg_pb)?);
+        Ok(())
     }
 
     /// The host name of the server.
@@ -87,7 +88,7 @@ impl Config {
         self.session_creation_rate
     }
 
-    fn from_pb(mut cfg_pb: proto::config::Config) -> io::Result<Config> {
+    fn from_pb(cfg_pb: proto::config::Config) -> io::Result<Config> {
         // Check fields of cfg_pb.
         if cfg_pb.host_name.is_empty() {
             return Err(io::Error::new(

@@ -1,3 +1,5 @@
+#![allow(dead_code)] // TODO: remove, once everything is wired together
+
 use crate::{proto::key::Key, secret::Vault};
 use protobuf::{self, Message};
 use std::fs::File;

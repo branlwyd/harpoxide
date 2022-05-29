@@ -9,7 +9,6 @@ use std::{
     fs::{self, File},
     path::{Component, Path, PathBuf},
 };
-use tempfile;
 use walkdir::WalkDir;
 
 const FILE_EXTENSION: &str = "harp";
@@ -26,15 +25,12 @@ impl Vault {
     /// Creates a new Vault with the given locked `key`, using encrypted entry
     /// data from the given `location`.
     pub fn new<P: AsRef<Path>>(location: P, key: Key) -> Result<Vault> {
-        let loc = PathBuf::from(location.as_ref())
+        let location = PathBuf::from(location.as_ref())
             .canonicalize()
             .map_err(|e| Error::Internal(e.to_string()))?;
         match key.key {
             None => Err(Error::Internal(String::from("empty key"))),
-            Some(key::Key::SecretboxKey(sbox_key)) => Ok(Vault {
-                location: loc,
-                key: sbox_key,
-            }),
+            Some(key::Key::SecretboxKey(key)) => Ok(Vault { location, key }),
             _ => Err(Error::Unimplemented(String::from("unimplemented key type"))),
         }
     }
@@ -42,7 +38,7 @@ impl Vault {
     /// Attempts to open the vault. On success, a Store instance is returned.
     pub fn unlock(&self, passphrase: &str) -> Result<Store> {
         // Derive the key-encryption key (KEK).
-        let mut kek_bytes: [u8; secretbox::KEYBYTES] = [0; secretbox::KEYBYTES];
+        let mut kek_bytes = [0; secretbox::KEYBYTES];
         let log2_n = (self.key.n as f64).log2() as u8; // TODO: check that N is a power of 2 before applying log_2.
         let params = scrypt::Params::new(log2_n, self.key.r as u32, self.key.p as u32)
             .map_err(|e| Error::Internal(format!("scrypt parameters: {}", e)))?;
@@ -69,7 +65,7 @@ impl Vault {
 
         Ok(Store {
             location: self.location.clone(),
-            key: key,
+            key,
         })
     }
 }
@@ -134,7 +130,7 @@ impl Store {
     /// Gets an entry's contents given its name.
     pub fn get(&self, entry: &str) -> Result<String> {
         // Read entry content from disk.
-        let e = {
+        let entry = {
             let filename = self.filename_for_entry(entry)?;
             let mut f = File::open(filename).map_err(|e| {
                 Error::Internal(format!("entry {} couldn't be opened: {}", entry, e))
@@ -145,10 +141,10 @@ impl Store {
         };
 
         // Decrypt content and return.
-        let nonce = secretbox::Nonce::from_slice(&e.nonce).ok_or_else(|| {
+        let nonce = secretbox::Nonce::from_slice(&entry.nonce).ok_or_else(|| {
             Error::Internal(format!("entry {} has incorrectly-sized nonce", entry))
         })?;
-        let content_bytes = secretbox::open(&e.encrypted_content, &nonce, &self.key)
+        let content_bytes = secretbox::open(&entry.encrypted_content, &nonce, &self.key)
             .map_err(|_| Error::Internal(format!("entry {} couldn't be decrypted", entry)))?;
         String::from_utf8(content_bytes).map_err(|e| {
             Error::Internal(format!("entry {} couldn't be UTF-8 decoded: {}", entry, e))
@@ -157,17 +153,17 @@ impl Store {
 
     /// Updates an entry's contents to the given value, or creates a new entry.
     pub fn put(&self, entry: &str, content: &str) -> Result<()> {
-        // Encrypt content & build up Entry proto.
+        let filename = self.filename_for_entry(entry)?;
+
+        // Encrypt content & build Entry proto.
         let nonce = secretbox::gen_nonce();
-        let encrypted_content = secretbox::seal(content.as_bytes(), &nonce, &self.key);
-        let e = Entry {
-            encrypted_content,
+        let entry = Entry {
+            encrypted_content: secretbox::seal(content.as_bytes(), &nonce, &self.key),
             nonce: nonce.as_ref().to_vec(),
             ..Default::default()
         };
 
         // Atomically write the new file content.
-        let filename = self.filename_for_entry(entry)?;
         if let Some(dir) = filename.parent() {
             fs::create_dir_all(dir).map_err(|e| {
                 Error::Internal(format!("couldn't create dir {}: {}", dir.display(), e))
@@ -178,7 +174,8 @@ impl Store {
             .ok_or_else(|| Error::Internal(format!("entry {} has no parent", entry)))?;
         let mut temp_file = tempfile::NamedTempFile::new_in(path)
             .map_err(|e| Error::Internal(format!("couldn't create temporary file: {}", e)))?;
-        e.write_to_writer(&mut temp_file)
+        entry
+            .write_to_writer(&mut temp_file)
             .map_err(|e| Error::Internal(format!("couldn't write to temporary file: {}", e)))?;
         temp_file
             .persist(filename)
@@ -195,20 +192,20 @@ impl Store {
         })?;
 
         // Clean up any newly-empty directories.
-        for anc in filename.ancestors().skip(1) {
-            if anc == &self.location {
+        for ancestor in filename.ancestors().skip(1) {
+            if ancestor == self.location {
                 break; // Never delete the base directory of the store.
             }
-            let mut it = anc.read_dir().map_err(|e| {
-                Error::Internal(format!("couldn't read dir {}: {}", anc.display(), e))
+            let mut it = ancestor.read_dir().map_err(|e| {
+                Error::Internal(format!("couldn't read dir {}: {}", ancestor.display(), e))
             })?;
-            if !it.next().is_none() {
+            if it.next().is_some() {
                 break; // Directory is not empty.
             }
-            fs::remove_dir(anc).map_err(|e| {
+            fs::remove_dir(ancestor).map_err(|e| {
                 Error::Internal(format!(
                     "couldn't delete empty dir {}: {}",
-                    anc.display(),
+                    ancestor.display(),
                     e
                 ))
             })?;
@@ -217,18 +214,18 @@ impl Store {
     }
 
     fn filename_for_entry(&self, entry: &str) -> Result<PathBuf> {
-        if !entry.starts_with("/") {
+        if !entry.starts_with('/') {
             return Err(Error::Internal(format!("invalid entry name: {}", entry)));
         }
-        let mut pb = PathBuf::from(&self.location);
-        pb.push(&entry[1..]);
-        pb.set_extension(FILE_EXTENSION);
-        for c in pb.components() {
-            if c == Component::ParentDir {
+        let mut path_buf = PathBuf::from(&self.location);
+        path_buf.push(&entry[1..]); // TODO: if entry[1] is '/' this allows access to arbitrary path
+        path_buf.set_extension(FILE_EXTENSION);
+        for component in path_buf.components() {
+            if component == Component::ParentDir {
                 return Err(Error::Internal(format!("invalid entry name: {}", entry)));
             }
         }
-        Ok(pb)
+        Ok(path_buf)
     }
 }
 
@@ -253,17 +250,15 @@ impl fmt::Display for Error {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::fs::File;
-    use std::io;
-    use std::path::{Path, PathBuf};
-
-    use protobuf::Message;
-    use tempdir::TempDir;
-
-    use crate::proto::key::Key;
-
     use super::{Error, Vault};
+    use crate::proto::key::Key;
+    use protobuf::Message;
+    use std::{
+        fs::{self, File},
+        io,
+        path::{Path, PathBuf},
+    };
+    use tempdir::TempDir;
 
     const CORRECT_PASSWORD: &str = "password";
     const ALPHA_CONTENT: &str = "Alpha password\nsecond line\n\nhttp://google.com\nhttp://google.com/\nhttps://google.com/foo/bar\n";
@@ -342,8 +337,7 @@ mod tests {
     }
 
     fn copy_dir_recursive<U: AsRef<Path>, V: AsRef<Path>>(from: U, to: V) -> io::Result<()> {
-        let mut stack = Vec::new();
-        stack.push(PathBuf::from(from.as_ref()));
+        let mut stack = Vec::from([PathBuf::from(from.as_ref())]);
 
         let output_root = PathBuf::from(to.as_ref());
         let input_root_count = PathBuf::from(from.as_ref()).components().count();

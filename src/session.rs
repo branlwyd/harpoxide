@@ -1,11 +1,11 @@
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use base64;
-use rand::{thread_rng, Rng};
-
 use crate::secret;
+use base64::display::Base64Display;
+use rand::{thread_rng, Rng};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt::Display,
+    sync::{Arc, Mutex},
+};
 
 // TODO: rustdoc
 // TODO: session timeout
@@ -21,7 +21,7 @@ pub struct Handler {
 impl Handler {
     pub fn new(vault: secret::Vault) -> Handler {
         Handler {
-            vault: vault,
+            vault,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -36,7 +36,7 @@ impl Handler {
             if let Entry::Vacant(v) = sessions.entry(ID::new()) {
                 let sess = Arc::new(Session {
                     id: v.key().clone(),
-                    store: store,
+                    store,
                 });
                 v.insert(Arc::clone(&sess));
                 return Ok(sess);
@@ -81,7 +81,7 @@ impl ID {
         ID(thread_rng().gen::<[u8; ID_LENGTH]>())
     }
 
-    pub fn from_string<T: AsRef<[u8]>>(s: T) -> Option<ID> {
+    pub fn from_slice<T: AsRef<[u8]>>(s: T) -> Option<ID> {
         let s = s.as_ref();
         if s.len() != ENCODED_ID_LENGTH {
             return None;
@@ -92,9 +92,15 @@ impl ID {
         }
         Some(id)
     }
+}
 
-    pub fn to_string(&self) -> String {
-        base64::encode_config(self.0, base64::URL_SAFE_NO_PAD)
+impl Display for ID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            Base64Display::with_config(&self.0, base64::URL_SAFE_NO_PAD)
+        )
     }
 }
 
@@ -108,8 +114,8 @@ mod tests {
     }
 
     #[test]
-    fn id_string_conversion() {
+    fn id_slice_conversion() {
         let id = ID::new();
-        assert_eq!(ID::from_string(id.to_string()), Some(id));
+        assert_eq!(ID::from_slice(id.to_string()), Some(id));
     }
 }
