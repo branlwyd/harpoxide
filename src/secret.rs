@@ -214,16 +214,27 @@ impl Store {
     }
 
     fn filename_for_entry(&self, entry: &str) -> Result<PathBuf> {
-        if !entry.starts_with('/') {
+        // Entry names must be absolute, e.g. "/My Bank". Strip the prefix to validate this & to
+        // make the path relative for the next step. (This relies on the behavior of `strip_prefix`
+        // to remove multiple leading slashes to ensure that `entry_path` ends up as a relative
+        // path. This isn't documented, but the validation at the end of this function would catch
+        // a path outside of `self.location` anyway.)
+        let entry_path = match Path::new(entry).strip_prefix("/") {
+            Ok(entry_path) => entry_path,
+            Err(_) => return Err(Error::Internal(format!("invalid entry name: {}", entry))),
+        };
+
+        // Produce the final filepath for this entry name.
+        let path_buf = self
+            .location
+            .join(entry_path)
+            .with_extension(FILE_EXTENSION);
+
+        // Validate that the path is a subpath of the location to avoid path-traversal & return.
+        if !path_buf.starts_with(&self.location)
+            || path_buf.components().any(|c| c == Component::ParentDir)
+        {
             return Err(Error::Internal(format!("invalid entry name: {}", entry)));
-        }
-        let mut path_buf = PathBuf::from(&self.location);
-        path_buf.push(&entry[1..]); // TODO: if entry[1] is '/' this allows access to arbitrary path
-        path_buf.set_extension(FILE_EXTENSION);
-        for component in path_buf.components() {
-            if component == Component::ParentDir {
-                return Err(Error::Internal(format!("invalid entry name: {}", entry)));
-            }
         }
         Ok(path_buf)
     }
@@ -250,9 +261,10 @@ impl fmt::Display for Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, Vault};
+    use super::{Error, Store, Vault};
     use crate::proto::key::Key;
     use protobuf::Message;
+    use sodiumoxide::crypto::secretbox;
     use std::{
         fs::{self, File},
         io,
@@ -334,6 +346,33 @@ mod tests {
         };
         let vault = Vault::new(dir.as_ref(), key).unwrap();
         (vault, dir)
+    }
+
+    #[test]
+    fn filename_for_entry() {
+        let store = Store {
+            location: PathBuf::from("/foo/bar"),
+            key: secretbox::Key::from_slice(&[0; secretbox::KEYBYTES]).unwrap(), // key doesn't matter for this test
+        };
+        for (entry, want_filepath) in [
+            ("/baz", Some("/foo/bar/baz.harp")),
+            ("baz", None),
+            ("/../baz", None),
+            ("/baz/../quux", None),
+            ("///baz", Some("/foo/bar/baz.harp")), // weird, but I'll take it for now
+        ] {
+            let rslt = store.filename_for_entry(entry);
+            match &want_filepath {
+                Some(want_filepath) => assert_eq!(
+                    rslt.clone().unwrap(),
+                    PathBuf::from(want_filepath),
+                    "entry: {:?} rslt: {:?}",
+                    entry,
+                    rslt
+                ),
+                None => assert!(rslt.is_err(), "entry: {:?} rslt: {:?}", entry, rslt),
+            }
+        }
     }
 
     fn copy_dir_recursive<U: AsRef<Path>, V: AsRef<Path>>(from: U, to: V) -> io::Result<()> {
