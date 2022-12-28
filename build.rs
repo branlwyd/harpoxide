@@ -13,7 +13,7 @@ fn main() {
 
     protobuf_codegen::Codegen::new()
         .out_dir("src/proto")
-        .inputs(&[
+        .inputs([
             "proto/harpd/config.proto",
             "proto/secret/entry.proto",
             "proto/secret/key.proto",
