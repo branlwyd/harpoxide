@@ -1,6 +1,6 @@
 use crate::secret;
 use base64::display::Base64Display;
-use rand::{thread_rng, Rng};
+use rand::{distributions::Standard, prelude::Distribution, random, Rng};
 use std::{
     collections::{hash_map::Entry, HashMap},
     fmt::Display,
@@ -33,7 +33,7 @@ impl Handler {
         loop {
             // Avoid conflicts on newly-allocated IDs.
             // This loop body is overwhelmingly likely to run only once per call to new_session.
-            if let Entry::Vacant(v) = sessions.entry(ID::new()) {
+            if let Entry::Vacant(v) = sessions.entry(random()) {
                 let sess = Arc::new(Session {
                     id: v.key().clone(),
                     store,
@@ -77,10 +77,6 @@ const ENCODED_ID_LENGTH: usize = 43; // 4 * ceil(ID_LENGTH / 3)
 pub struct ID([u8; ID_LENGTH]);
 
 impl ID {
-    fn new() -> ID {
-        ID(thread_rng().gen::<[u8; ID_LENGTH]>())
-    }
-
     pub fn from_slice<T: AsRef<[u8]>>(s: T) -> Option<ID> {
         let s = s.as_ref();
         if s.len() != ENCODED_ID_LENGTH {
@@ -91,6 +87,12 @@ impl ID {
             return None;
         }
         Some(id)
+    }
+}
+
+impl Distribution<ID> for Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ID {
+        ID(rng.gen())
     }
 }
 
@@ -107,15 +109,16 @@ impl Display for ID {
 #[cfg(test)]
 mod tests {
     use super::ID;
+    use rand::random;
 
     #[test]
     fn id_generation() {
-        assert_ne!(ID::new(), ID::new());
+        assert_ne!(random::<ID>(), random::<ID>());
     }
 
     #[test]
     fn id_slice_conversion() {
-        let id = ID::new();
+        let id: ID = random();
         assert_eq!(ID::from_slice(id.to_string()), Some(id));
     }
 }
