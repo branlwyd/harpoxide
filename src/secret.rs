@@ -1,12 +1,9 @@
-use crate::proto::{
-    entry::Entry,
-    key::{key, Key, SecretboxKey},
-};
-use protobuf::{self, Message};
+use crate::proto::secret::{key, Entry, Key, SecretboxKey};
+use prost::Message as _;
 use sodiumoxide::{crypto::secretbox, utils::memzero};
 use std::{
-    fmt,
-    fs::{self, File},
+    fmt, fs,
+    io::Write,
     path::{Component, Path, PathBuf},
 };
 use walkdir::WalkDir;
@@ -135,24 +132,26 @@ impl Store {
     /// Gets an entry's contents given its name.
     pub fn get(&self, entry: &str) -> Result<String> {
         // Read entry content from disk.
-        let entry = {
+        let entry_pb = {
             let filename = self.filename_for_entry(entry)?;
-            let mut f = File::open(filename).map_err(|e| {
-                Error::Internal(format!("entry {} couldn't be opened: {}", entry, e))
-            })?;
-            Entry::parse_from_reader(&mut f).map_err(|e| {
+            let entry_bytes = fs::read(filename)
+                .map_err(|e| Error::Internal(format!("entry {} couldn't be read: {}", entry, e)))?;
+            Entry::decode(entry_bytes.as_ref()).map_err(|e| {
                 Error::Internal(format!("entry {} couldn't be parsed: {}", entry, e))
             })?
         };
 
         // Decrypt content and return.
-        let nonce = secretbox::Nonce::from_slice(&entry.nonce).ok_or_else(|| {
+        let nonce = secretbox::Nonce::from_slice(&entry_pb.nonce).ok_or_else(|| {
             Error::Internal(format!("entry {} has incorrectly-sized nonce", entry))
         })?;
-        let content_bytes = secretbox::open(&entry.encrypted_content, &nonce, &self.key)
+        let content_bytes = secretbox::open(&entry_pb.encrypted_content, &nonce, &self.key)
             .map_err(|_| Error::Internal(format!("entry {} couldn't be decrypted", entry)))?;
-        String::from_utf8(content_bytes).map_err(|e| {
-            Error::Internal(format!("entry {} couldn't be UTF-8 decoded: {}", entry, e))
+        String::from_utf8(content_bytes).map_err(|err| {
+            Error::Internal(format!(
+                "entry {} couldn't be UTF-8 decoded: {}",
+                entry, err
+            ))
         })
     }
 
@@ -162,11 +161,11 @@ impl Store {
 
         // Encrypt content & build Entry proto.
         let nonce = secretbox::gen_nonce();
-        let entry = Entry {
+        let entry_bytes = Entry {
             encrypted_content: secretbox::seal(content.as_bytes(), &nonce, &self.key),
             nonce: nonce.as_ref().to_vec(),
-            ..Default::default()
-        };
+        }
+        .encode_to_vec();
 
         // Atomically write the new file content.
         if let Some(dir) = filename.parent() {
@@ -179,8 +178,8 @@ impl Store {
             .ok_or_else(|| Error::Internal(format!("entry {} has no parent", entry)))?;
         let mut temp_file = tempfile::NamedTempFile::new_in(path)
             .map_err(|e| Error::Internal(format!("couldn't create temporary file: {}", e)))?;
-        entry
-            .write_to_writer(&mut temp_file)
+        temp_file
+            .write_all(&entry_bytes)
             .map_err(|e| Error::Internal(format!("couldn't write to temporary file: {}", e)))?;
         temp_file
             .persist(filename)
@@ -267,15 +266,14 @@ impl fmt::Display for Error {
 #[cfg(test)]
 mod tests {
     use super::{Error, Store, Vault};
-    use crate::proto::key::Key;
-    use protobuf::Message;
+    use crate::proto::secret::Key;
+    use prost::Message as _;
     use sodiumoxide::crypto::secretbox;
-    use tempfile::TempDir;
     use std::{
-        fs::{self, File},
-        io,
+        fs, io,
         path::{Path, PathBuf},
     };
+    use tempfile::TempDir;
 
     const CORRECT_PASSWORD: &str = "password";
     const ALPHA_CONTENT: &str = "Alpha password\nsecond line\n\nhttp://google.com\nhttp://google.com/\nhttps://google.com/foo/bar\n";
@@ -346,8 +344,8 @@ mod tests {
         let dir = TempDir::with_prefix("harpoxide").unwrap();
         copy_dir_recursive("tests/assets/passwords.sbox", dir.path()).unwrap();
         let key = {
-            let mut f = File::open("tests/assets/key.sbox").unwrap();
-            Key::parse_from_reader(&mut f).unwrap()
+            let key_bytes = fs::read("tests/assets/key.sbox").unwrap();
+            Key::decode(key_bytes.as_ref()).unwrap()
         };
         let vault = Vault::new(dir.as_ref(), key).unwrap();
         (vault, dir)

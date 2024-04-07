@@ -1,4 +1,4 @@
-use crate::proto;
+use crate::proto::harpd::Config as ConfigProto;
 use lazy_static::lazy_static;
 use std::{
     io,
@@ -43,7 +43,7 @@ impl Config {
 
     /// Sets the current config by parsing a config from the given reader.
     /// Any existing config is replaced on success.
-    pub fn set_from_pb(cfg_pb: proto::config::Config) -> io::Result<()> {
+    pub fn set_from_pb(cfg_pb: ConfigProto) -> io::Result<()> {
         Config::set(Config::from_pb(cfg_pb)?);
         Ok(())
     }
@@ -88,7 +88,7 @@ impl Config {
         self.session_creation_rate
     }
 
-    fn from_pb(cfg_pb: proto::config::Config) -> io::Result<Config> {
+    fn from_pb(cfg_pb: ConfigProto) -> io::Result<Config> {
         // Check fields of cfg_pb.
         if cfg_pb.host_name.is_empty() {
             return Err(io::Error::new(
@@ -173,13 +173,13 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::{Config, DEFAULT_SESSION_CREATION_RATE, DEFAULT_SESSION_DURATION};
-    use crate::proto;
+    use crate::proto::harpd::Config as ConfigProto;
     use lazy_static::lazy_static;
     use std::{io, path::Path, time::Duration};
 
     lazy_static! {
-        static ref CONFIG_PB: proto::config::Config = {
-            proto::config::Config {
+        static ref CONFIG_PB: ConfigProto = {
+            ConfigProto {
                 host_name: String::from("host_name value"),
                 email: String::from("email value"),
                 cert_dir: String::from("cert_dir value"),
@@ -243,7 +243,7 @@ mod tests {
         assert_causes_parse_error(|c| c.new_session_rate = f64::NEG_INFINITY);
     }
 
-    fn assert_causes_parse_error<F: Fn(&mut proto::config::Config)>(f: F) {
+    fn assert_causes_parse_error<F: Fn(&mut ConfigProto)>(f: F) {
         let mut cfg_pb = CONFIG_PB.clone();
         f(&mut cfg_pb);
         assert_eq!(
