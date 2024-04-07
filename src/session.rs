@@ -46,7 +46,7 @@ impl Handler {
 
     pub fn get_session(&self, session_id: &ID) -> Option<Arc<Session>> {
         let sessions = self.sessions.lock().unwrap();
-        sessions.get(session_id).map(Arc::clone)
+        sessions.get(session_id).cloned()
     }
 
     pub fn close_session(&self, session_id: &ID) {
