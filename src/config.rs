@@ -1,5 +1,4 @@
 use crate::proto::harpd::Config as ConfigProto;
-use lazy_static::lazy_static;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -12,9 +11,7 @@ use std::{
 const DEFAULT_SESSION_DURATION: Duration = Duration::from_secs(300); // 5 minutes
 const DEFAULT_SESSION_CREATION_RATE: f64 = 1.0; // 1 Hz
 
-lazy_static! {
-    static ref CONFIG: Mutex<Option<Arc<Config>>> = Mutex::new(None);
-}
+static CONFIG: Mutex<Option<Arc<Config>>> = Mutex::new(None);
 
 /// Config represents an immutable harpoxide configuration.
 #[derive(Debug)]
@@ -33,7 +30,7 @@ impl Config {
     /// Gets the current config. This will panic if no config has been successfully set yet.
     pub fn get() -> Arc<Config> {
         let cfg = CONFIG.lock().unwrap();
-        Arc::clone(cfg.as_ref().unwrap())
+        Arc::clone(cfg.as_ref().expect("No configuration set"))
     }
 
     fn set(new_cfg: Config) {
@@ -174,47 +171,45 @@ impl Config {
 mod tests {
     use super::{Config, DEFAULT_SESSION_CREATION_RATE, DEFAULT_SESSION_DURATION};
     use crate::proto::harpd::Config as ConfigProto;
-    use lazy_static::lazy_static;
-    use std::{io, path::Path, time::Duration};
+    use std::{io, path::Path, sync::OnceLock, time::Duration};
 
-    lazy_static! {
-        static ref CONFIG_PB: ConfigProto = {
-            ConfigProto {
-                host_name: String::from("host_name value"),
-                email: String::from("email value"),
-                cert_dir: String::from("cert_dir value"),
-                pass_loc: String::from("pass_loc value"),
-                key_file: String::from("key_file value"),
-                mfa_reg: Vec::from([
-                    String::from("mfa_reg value 0"),
-                    String::from("mfa_reg value 1"),
-                ]),
-                session_duration_s: 45.3,
-                new_session_rate: 2.5,
-                ..Default::default()
-            }
-        };
+    fn config_pb() -> &'static ConfigProto {
+        static CONFIG_PB: OnceLock<ConfigProto> = OnceLock::new();
+        CONFIG_PB.get_or_init(|| ConfigProto {
+            host_name: String::from("host_name value"),
+            email: String::from("email value"),
+            cert_dir: String::from("cert_dir value"),
+            pass_loc: String::from("pass_loc value"),
+            key_file: String::from("key_file value"),
+            mfa_reg: Vec::from([
+                String::from("mfa_reg value 0"),
+                String::from("mfa_reg value 1"),
+            ]),
+            session_duration_s: 45.3,
+            new_session_rate: 2.5,
+            ..Default::default()
+        })
     }
 
     #[test]
     fn from_pb() {
-        let cfg = Config::from_pb(CONFIG_PB.clone()).unwrap();
-        assert_eq!(cfg.host_name(), CONFIG_PB.host_name);
-        assert_eq!(cfg.email(), CONFIG_PB.email);
-        assert_eq!(cfg.certificate_dir(), Path::new(&CONFIG_PB.cert_dir));
-        assert_eq!(cfg.password_location(), Path::new(&CONFIG_PB.pass_loc));
-        assert_eq!(cfg.key_file(), Path::new(&CONFIG_PB.key_file));
-        assert_eq!(cfg.mfa_registrations(), CONFIG_PB.mfa_reg);
+        let cfg = Config::from_pb(config_pb().clone()).unwrap();
+        assert_eq!(cfg.host_name(), config_pb().host_name);
+        assert_eq!(cfg.email(), config_pb().email);
+        assert_eq!(cfg.certificate_dir(), Path::new(&config_pb().cert_dir));
+        assert_eq!(cfg.password_location(), Path::new(&config_pb().pass_loc));
+        assert_eq!(cfg.key_file(), Path::new(&config_pb().key_file));
+        assert_eq!(cfg.mfa_registrations(), config_pb().mfa_reg);
         assert_eq!(
             cfg.session_duration(),
-            Duration::from_secs_f64(CONFIG_PB.session_duration_s)
+            Duration::from_secs_f64(config_pb().session_duration_s)
         );
-        assert_eq!(cfg.session_creation_rate(), CONFIG_PB.new_session_rate);
+        assert_eq!(cfg.session_creation_rate(), config_pb().new_session_rate);
     }
 
     #[test]
     fn from_pb_defaults() {
-        let mut cfg_pb = CONFIG_PB.clone();
+        let mut cfg_pb = config_pb().clone();
         cfg_pb.session_duration_s = 0.0;
         cfg_pb.new_session_rate = 0.0;
         let cfg = Config::from_pb(cfg_pb).unwrap();
@@ -244,7 +239,7 @@ mod tests {
     }
 
     fn assert_causes_parse_error<F: Fn(&mut ConfigProto)>(f: F) {
-        let mut cfg_pb = CONFIG_PB.clone();
+        let mut cfg_pb = config_pb().clone();
         f(&mut cfg_pb);
         assert_eq!(
             Config::from_pb(cfg_pb).unwrap_err().kind(),
