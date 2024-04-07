@@ -1,5 +1,5 @@
 use crate::secret;
-use base64::display::Base64Display;
+use base64::{display::Base64Display, engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{distributions::Standard, prelude::Distribution, random, Rng};
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -83,7 +83,7 @@ impl ID {
             return None;
         }
         let mut id = ID([0; ID_LENGTH]);
-        if base64::decode_config_slice(s, base64::URL_SAFE_NO_PAD, &mut id.0[..]).is_err() {
+        if URL_SAFE_NO_PAD.decode_slice(s, &mut id.0[..]).is_err() {
             return None;
         }
         Some(id)
@@ -98,11 +98,7 @@ impl Distribution<ID> for Standard {
 
 impl Display for ID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            Base64Display::with_config(&self.0, base64::URL_SAFE_NO_PAD)
-        )
+        write!(f, "{}", Base64Display::new(&self.0, &URL_SAFE_NO_PAD))
     }
 }
 

@@ -40,8 +40,13 @@ impl Vault {
         // Derive the key-encryption key (KEK).
         let mut kek_bytes = [0; secretbox::KEYBYTES];
         let log2_n = (self.key.n as f64).log2() as u8; // TODO: check that N is a power of 2 before applying log_2.
-        let params = scrypt::Params::new(log2_n, self.key.r as u32, self.key.p as u32)
-            .map_err(|e| Error::Internal(format!("scrypt parameters: {}", e)))?;
+        let params = scrypt::Params::new(
+            log2_n,
+            self.key.r as u32,
+            self.key.p as u32,
+            secretbox::KEYBYTES,
+        )
+        .map_err(|e| Error::Internal(format!("scrypt parameters: {}", e)))?;
         scrypt::scrypt(passphrase.as_ref(), &self.key.salt, &params, &mut kek_bytes)
             .map_err(|e| Error::Internal(format!("scrypt error: {}", e)))?;
         let kek = secretbox::Key::from_slice(&kek_bytes).ok_or_else(|| {
@@ -265,12 +270,12 @@ mod tests {
     use crate::proto::key::Key;
     use protobuf::Message;
     use sodiumoxide::crypto::secretbox;
+    use tempfile::TempDir;
     use std::{
         fs::{self, File},
         io,
         path::{Path, PathBuf},
     };
-    use tempdir::TempDir;
 
     const CORRECT_PASSWORD: &str = "password";
     const ALPHA_CONTENT: &str = "Alpha password\nsecond line\n\nhttp://google.com\nhttp://google.com/\nhttps://google.com/foo/bar\n";
@@ -338,7 +343,7 @@ mod tests {
     }
 
     fn create_vault() -> (Vault, TempDir) {
-        let dir = TempDir::new("harpoxide").unwrap();
+        let dir = TempDir::with_prefix("harpoxide").unwrap();
         copy_dir_recursive("tests/assets/passwords.sbox", dir.path()).unwrap();
         let key = {
             let mut f = File::open("tests/assets/key.sbox").unwrap();
