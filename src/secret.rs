@@ -1,17 +1,19 @@
 use crate::proto::secret::{key, Entry, Key, SecretboxKey};
+use anyhow::{anyhow, Context};
 use prost::Message as _;
 use sodiumoxide::{crypto::secretbox, utils::memzero};
 use std::{
-    fmt, fs,
+    fs,
     io::Write,
     path::{Component, Path, PathBuf},
 };
+use thiserror::Error;
 use walkdir::WalkDir;
 
 const FILE_EXTENSION: &str = "harp";
 
-/// Represents a passphrase-locked "vault" of secret data. Before data can be
-/// accessed, the vault must be unlocked.
+/// Represents a passphrase-locked "vault" of secret data. Before data can be accessed, the vault
+/// must be unlocked.
 #[derive(Debug)]
 pub struct Vault {
     location: PathBuf,
@@ -19,21 +21,21 @@ pub struct Vault {
 }
 
 impl Vault {
-    /// Creates a new Vault with the given locked `key`, using encrypted entry
-    /// data from the given `location`.
-    pub fn new<P: AsRef<Path>>(location: P, key: Key) -> Result<Vault> {
+    /// Creates a new Vault with the given locked `key`, using encrypted entry data from the given
+    /// `location`.
+    pub fn new<P: AsRef<Path>>(location: P, key: Key) -> Result<Vault, Error> {
         let location = PathBuf::from(location.as_ref())
             .canonicalize()
-            .map_err(|e| Error::Internal(e.to_string()))?;
+            .context("Couldn't canonicalize path")?;
         match key.key {
-            None => Err(Error::Internal(String::from("empty key"))),
+            None => Err(anyhow!("Missing key").into()),
             Some(key::Key::SecretboxKey(key)) => Ok(Vault { location, key }),
-            _ => Err(Error::Unimplemented(String::from("unimplemented key type"))),
+            _ => Err(anyhow!("Unimplemented key type").into()),
         }
     }
 
     /// Attempts to open the vault. On success, a Store instance is returned.
-    pub fn unlock(&self, passphrase: &str) -> Result<Store> {
+    pub fn unlock(&self, passphrase: &str) -> Result<Store, Error> {
         // Derive the key-encryption key (KEK).
         let mut kek_bytes = [0; secretbox::KEYBYTES];
         let log2_n = (self.key.n as f64).log2() as u8; // TODO: check that N is a power of 2 before applying log_2.
@@ -43,26 +45,20 @@ impl Vault {
             self.key.p as u32,
             secretbox::KEYBYTES,
         )
-        .map_err(|e| Error::Internal(format!("scrypt parameters: {}", e)))?;
+        .map_err(|err| anyhow!("scrypt parameters: {}", err))?;
         scrypt::scrypt(passphrase.as_ref(), &self.key.salt, &params, &mut kek_bytes)
-            .map_err(|e| Error::Internal(format!("scrypt error: {}", e)))?;
-        let kek = secretbox::Key::from_slice(&kek_bytes).ok_or_else(|| {
-            Error::Internal(String::from("key-encryption key was not KEYBYTES long"))
-        })?;
+            .map_err(|err| anyhow!("scrypt: {}", err))?;
+        let kek = secretbox::Key::from_slice(&kek_bytes)
+            .ok_or_else(|| anyhow!("KEK length incorrect"))?;
         memzero(&mut kek_bytes);
 
         // Decrypt the encryption key (EK) using the derived KEK.
-        let nonce =
-            secretbox::Nonce::from_slice(&self.key.encrypted_key_nonce).ok_or_else(|| {
-                Error::Internal(String::from("encrypted-key nonce was not NONCEBYTES long"))
-            })?;
+        let nonce = secretbox::Nonce::from_slice(&self.key.encrypted_key_nonce)
+            .ok_or_else(|| anyhow!("Nonce length incorrect"))?;
         let mut ek_bytes = secretbox::open(&self.key.encrypted_key, &nonce, &kek)
             .map_err(|_| Error::InvalidPassphrase)?;
-        let key = secretbox::Key::from_slice(&ek_bytes).ok_or_else(|| {
-            Error::Internal(String::from(
-                "secretbox encrypted key was not KEYBYTES long",
-            ))
-        })?;
+        let key = secretbox::Key::from_slice(&ek_bytes)
+            .ok_or_else(|| anyhow!("Encrypted key length incorrect"))?;
         memzero(&mut ek_bytes);
 
         Ok(Store {
@@ -72,15 +68,13 @@ impl Vault {
     }
 }
 
-/// Store represents a serialized store of key-value entries. The keys can be
-/// thought of as a service name (e.g. "My Bank"), while the values are some
-/// content about the corresponding service which should be kept secret (e.g.
-/// username, password, security questions, etc).
+/// Store represents a serialized store of key-value entries. The keys can be thought of as a
+/// service name (e.g. "My Bank"), while the values are some content about the corresponding service
+/// which should be kept secret (e.g. username, password, security questions, etc).
 ///
-/// Entries are named with absolute slash-separated paths, for example
-/// "/path/to/entry-name". There is no restriction on what can be stored as
-/// content. Store implementations will always store entry content securely
-/// (i.e. secretly), but may choose not to store entry names securely.
+/// Entries are named with absolute slash-separated paths, for example "/path/to/entry-name". There
+/// is no restriction on what can be stored as content. Store implementations will always store
+/// entry content securely (i.e. secretly), but may choose not to store entry names securely.
 #[derive(Debug)]
 pub struct Store {
     location: PathBuf,
@@ -89,16 +83,10 @@ pub struct Store {
 
 impl Store {
     /// Retrieves all of the entries in the Store.
-    pub fn list(&self) -> Result<Vec<String>> {
+    pub fn list(&self) -> Result<Vec<String>, Error> {
         let mut result = Vec::new();
         for entry in WalkDir::new(&self.location) {
-            let entry = entry.map_err(|e| {
-                Error::Internal(format!(
-                    "couldn't walk directory {}: {}",
-                    self.location.display(),
-                    e
-                ))
-            })?;
+            let entry = entry.context("Couldn't walk directory")?;
 
             if !entry.file_type().is_file() {
                 continue;
@@ -109,54 +97,41 @@ impl Store {
             }
             path = path
                 .strip_prefix(&self.location)
-                .map_err(|e| {
-                    Error::Internal(format!(
-                        "couldn't strip prefix from {}: {}",
-                        path.display(),
-                        e
-                    ))
-                })?
+                .with_context(|| format!("Couldn't strip prefix from {}", path.display()))?
                 .with_extension("");
             let mut entry_name = String::from("/");
-            entry_name.push_str(path.to_str().ok_or_else(|| {
-                Error::Internal(format!(
-                    "couldn't convert path to string: {}",
-                    path.display()
-                ))
-            })?);
+            entry_name.push_str(
+                path.to_str().ok_or_else(|| {
+                    anyhow!("Couldn't convert path to string: {}", path.display())
+                })?,
+            );
             result.push(entry_name);
         }
         Ok(result)
     }
 
     /// Gets an entry's contents given its name.
-    pub fn get(&self, entry: &str) -> Result<String> {
+    pub fn get(&self, entry: &str) -> Result<String, Error> {
         // Read entry content from disk.
         let entry_pb = {
             let filename = self.filename_for_entry(entry)?;
-            let entry_bytes = fs::read(filename)
-                .map_err(|e| Error::Internal(format!("entry {} couldn't be read: {}", entry, e)))?;
-            Entry::decode(entry_bytes.as_ref()).map_err(|e| {
-                Error::Internal(format!("entry {} couldn't be parsed: {}", entry, e))
-            })?
+            let entry_bytes =
+                fs::read(filename).with_context(|| format!("Entry {entry} couldn't be read"))?;
+            Entry::decode(entry_bytes.as_ref())
+                .with_context(|| format!("Entry {entry} couldn't be parsed"))?
         };
 
         // Decrypt content and return.
-        let nonce = secretbox::Nonce::from_slice(&entry_pb.nonce).ok_or_else(|| {
-            Error::Internal(format!("entry {} has incorrectly-sized nonce", entry))
-        })?;
+        let nonce = secretbox::Nonce::from_slice(&entry_pb.nonce)
+            .ok_or_else(|| anyhow!("Entry {entry} has incorrect nonce length"))?;
         let content_bytes = secretbox::open(&entry_pb.encrypted_content, &nonce, &self.key)
-            .map_err(|_| Error::Internal(format!("entry {} couldn't be decrypted", entry)))?;
-        String::from_utf8(content_bytes).map_err(|err| {
-            Error::Internal(format!(
-                "entry {} couldn't be UTF-8 decoded: {}",
-                entry, err
-            ))
-        })
+            .map_err(|_| anyhow!("Entry {entry} couldn't be decrypted"))?;
+        Ok(String::from_utf8(content_bytes)
+            .with_context(|| format!("Entry {entry} couldn't be UTF-8 decoded"))?)
     }
 
     /// Updates an entry's contents to the given value, or creates a new entry.
-    pub fn put(&self, entry: &str, content: &str) -> Result<()> {
+    pub fn put(&self, entry: &str, content: &str) -> Result<(), Error> {
         let filename = self.filename_for_entry(entry)?;
 
         // Encrypt content & build Entry proto.
@@ -168,56 +143,46 @@ impl Store {
         .encode_to_vec();
 
         // Atomically write the new file content.
-        if let Some(dir) = filename.parent() {
-            fs::create_dir_all(dir).map_err(|e| {
-                Error::Internal(format!("couldn't create dir {}: {}", dir.display(), e))
-            })?;
-        }
         let path = filename
             .parent()
-            .ok_or_else(|| Error::Internal(format!("entry {} has no parent", entry)))?;
+            .ok_or_else(|| anyhow!("Entry {entry} has no parent"))?;
+        fs::create_dir_all(path)
+            .with_context(|| format!("Couldn't create dir {}", path.display()))?;
         let mut temp_file = tempfile::NamedTempFile::new_in(path)
-            .map_err(|e| Error::Internal(format!("couldn't create temporary file: {}", e)))?;
+            .with_context(|| format!("Couldn't create temporary file for entry {entry}"))?;
         temp_file
             .write_all(&entry_bytes)
-            .map_err(|e| Error::Internal(format!("couldn't write to temporary file: {}", e)))?;
+            .with_context(|| format!("Couldn't write entry {entry} to temporary file"))?;
         temp_file
             .persist(filename)
-            .map_err(|e| Error::Internal(format!("couldn't persist temporary file: {}", e)))?;
+            .with_context(|| format!("Couldn't persist entry {entry}"))?;
         Ok(())
     }
 
     /// Removes an entry by name.
-    pub fn delete(&self, entry: &str) -> Result<()> {
+    pub fn delete(&self, entry: &str) -> Result<(), Error> {
         // Delete file for entry.
         let filename = self.filename_for_entry(entry)?;
-        fs::remove_file(&filename).map_err(|e| {
-            Error::Internal(format!("couldn't remove {}: {}", filename.display(), e))
-        })?;
+        fs::remove_file(&filename).with_context(|| format!("Couldn't delete entry {entry}"))?;
 
         // Clean up any newly-empty directories.
         for ancestor in filename.ancestors().skip(1) {
             if ancestor == self.location {
                 break; // Never delete the base directory of the store.
             }
-            let mut it = ancestor.read_dir().map_err(|e| {
-                Error::Internal(format!("couldn't read dir {}: {}", ancestor.display(), e))
-            })?;
+            let mut it = ancestor
+                .read_dir()
+                .with_context(|| format!("Couldn't read dir {}", ancestor.display()))?;
             if it.next().is_some() {
                 break; // Directory is not empty.
             }
-            fs::remove_dir(ancestor).map_err(|e| {
-                Error::Internal(format!(
-                    "couldn't delete empty dir {}: {}",
-                    ancestor.display(),
-                    e
-                ))
-            })?;
+            fs::remove_dir(ancestor)
+                .with_context(|| format!("Couldn't delete empty dir {}", ancestor.display()))?;
         }
         Ok(())
     }
 
-    fn filename_for_entry(&self, entry: &str) -> Result<PathBuf> {
+    fn filename_for_entry(&self, entry: &str) -> Result<PathBuf, Error> {
         // Entry names must be absolute, e.g. "/My Bank". Strip the prefix to validate this & to
         // make the path relative for the next step. (This relies on the behavior of `strip_prefix`
         // to remove multiple leading slashes to ensure that `entry_path` ends up as a relative
@@ -225,7 +190,7 @@ impl Store {
         // a path outside of `self.location` anyway.)
         let entry_path = match Path::new(entry).strip_prefix("/") {
             Ok(entry_path) => entry_path,
-            Err(_) => return Err(Error::Internal(format!("invalid entry name: {}", entry))),
+            Err(_) => return Err(anyhow!("Invalid entry name {entry}").into()),
         };
 
         // Produce the final filepath for this entry name.
@@ -238,29 +203,18 @@ impl Store {
         if !path_buf.starts_with(&self.location)
             || path_buf.components().any(|c| c == Component::ParentDir)
         {
-            return Err(Error::Internal(format!("invalid entry name: {}", entry)));
+            return Err(anyhow!("Invalid entry name {entry}").into());
         }
         Ok(path_buf)
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Error, Debug)]
 pub enum Error {
-    Internal(String),
+    #[error("invalid passphrase")]
     InvalidPassphrase,
-    Unimplemented(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Error::Internal(msg) => write!(f, "internal error: {}", msg),
-            Error::InvalidPassphrase => write!(f, "invalid passphrase"),
-            Error::Unimplemented(msg) => write!(f, "unimplemented: {}", msg),
-        }
-    }
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
 }
 
 #[cfg(test)]
@@ -289,10 +243,10 @@ mod tests {
 
         // Incorrect password gets an InvalidPassphrase error.
         let incorrect_password = format!("incorrect_{}", CORRECT_PASSWORD);
-        assert_eq!(
+        assert!(matches!(
             vault.unlock(&incorrect_password).unwrap_err(),
             Error::InvalidPassphrase
-        );
+        ));
     }
 
     #[test]
@@ -367,8 +321,8 @@ mod tests {
             let rslt = store.filename_for_entry(entry);
             match &want_filepath {
                 Some(want_filepath) => assert_eq!(
-                    rslt.clone().unwrap(),
-                    PathBuf::from(want_filepath),
+                    rslt.as_ref().unwrap(),
+                    &PathBuf::from(want_filepath),
                     "entry: {:?} rslt: {:?}",
                     entry,
                     rslt

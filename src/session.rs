@@ -3,7 +3,10 @@ use anyhow::bail;
 use base64::{display::Base64Display, engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{distributions::Standard, prelude::Distribution, random, Rng};
 use std::{
-    collections::{hash_map::Entry, HashMap}, fmt::Display, str::FromStr, sync::{Arc, Mutex}
+    collections::{hash_map::Entry, HashMap},
+    fmt::Display,
+    str::FromStr,
+    sync::{Arc, Mutex},
 };
 
 // TODO: rustdoc
@@ -25,7 +28,7 @@ impl Handler {
         }
     }
 
-    pub fn new_session(&self, passphrase: &str) -> secret::Result<Arc<Session>> {
+    pub fn new_session(&self, passphrase: &str) -> Result<Arc<Session>, secret::Error> {
         let store = self.vault.unlock(passphrase)?;
 
         let mut sessions = self.sessions.lock().unwrap();
@@ -104,9 +107,9 @@ impl Display for Id {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
     use super::Id;
     use rand::random;
+    use std::str::FromStr;
 
     #[test]
     fn id_generation() {
