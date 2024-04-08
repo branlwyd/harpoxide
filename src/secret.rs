@@ -257,7 +257,7 @@ mod tests {
         // Validate the initial state.
         let mut entries = store.list().unwrap();
         entries.sort();
-        assert_eq!(entries, vec!("/Alpha", "/Beta", "/Gamma"));
+        assert_eq!(entries, Vec::from(["/Alpha", "/Beta", "/Gamma"]));
         assert_eq!(store.get("/Alpha").unwrap(), ALPHA_CONTENT);
         assert_eq!(store.get("/Beta").unwrap(), BETA_CONTENT);
         assert_eq!(store.get("/Gamma").unwrap(), GAMMA_CONTENT);
@@ -266,14 +266,14 @@ mod tests {
         store.delete("/Beta").unwrap();
         let mut entries = store.list().unwrap();
         entries.sort();
-        assert_eq!(entries, vec!("/Alpha", "/Gamma"));
+        assert_eq!(entries, Vec::from(["/Alpha", "/Gamma"]));
 
         // Add an entry and check that it shows up & has the correct contents.
         const DELTA_CONTENT: &str = "Delta password\nsecond line\n";
         store.put("/Delta", DELTA_CONTENT).unwrap();
         let mut entries = store.list().unwrap();
         entries.sort();
-        assert_eq!(entries, vec!("/Alpha", "/Delta", "/Gamma"));
+        assert_eq!(entries, Vec::from(["/Alpha", "/Delta", "/Gamma"]));
         assert_eq!(store.get("/Delta").unwrap(), DELTA_CONTENT);
 
         // Add an entry in a directory and check that it shows up & has the correct contents.DELTA_CONTENT
@@ -281,7 +281,10 @@ mod tests {
         store.put("/Dir/Epsilon", EPSILON_CONTENT).unwrap();
         let mut entries = store.list().unwrap();
         entries.sort();
-        assert_eq!(entries, vec!("/Alpha", "/Delta", "/Dir/Epsilon", "/Gamma"));
+        assert_eq!(
+            entries,
+            Vec::from(["/Alpha", "/Delta", "/Dir/Epsilon", "/Gamma"])
+        );
         assert_eq!(store.get("/Dir/Epsilon").unwrap(), EPSILON_CONTENT);
 
         // Delete all entries, then check that the entries are gone.
