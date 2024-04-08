@@ -2,7 +2,7 @@
 
 use crate::{proto::secret::Key, secret::Vault};
 use prost::Message as _;
-use std::fs::{self};
+use std::fs;
 
 mod config;
 mod secret;

@@ -164,6 +164,7 @@ dependencies = [
 name = "harpoxide"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "base64",
  "prost",
  "prost-build",

@@ -1,10 +1,9 @@
 use crate::secret;
+use anyhow::bail;
 use base64::{display::Base64Display, engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{distributions::Standard, prelude::Distribution, random, Rng};
 use std::{
-    collections::{hash_map::Entry, HashMap},
-    fmt::Display,
-    sync::{Arc, Mutex},
+    collections::{hash_map::Entry, HashMap}, fmt::Display, str::FromStr, sync::{Arc, Mutex}
 };
 
 // TODO: rustdoc
@@ -15,7 +14,7 @@ use std::{
 
 pub struct Handler {
     vault: secret::Vault,
-    sessions: Mutex<HashMap<ID, Arc<Session>>>,
+    sessions: Mutex<HashMap<Id, Arc<Session>>>,
 }
 
 impl Handler {
@@ -44,24 +43,24 @@ impl Handler {
         }
     }
 
-    pub fn get_session(&self, session_id: &ID) -> Option<Arc<Session>> {
+    pub fn get_session(&self, session_id: &Id) -> Option<Arc<Session>> {
         let sessions = self.sessions.lock().unwrap();
         sessions.get(session_id).cloned()
     }
 
-    pub fn close_session(&self, session_id: &ID) {
+    pub fn close_session(&self, session_id: &Id) {
         let mut sessions = self.sessions.lock().unwrap();
         sessions.remove(session_id);
     }
 }
 
 pub struct Session {
-    id: ID,
+    id: Id,
     store: secret::Store,
 }
 
 impl Session {
-    pub fn id(&self) -> &ID {
+    pub fn id(&self) -> &Id {
         &self.id
     }
 
@@ -74,29 +73,30 @@ const ID_LENGTH: usize = 32;
 const ENCODED_ID_LENGTH: usize = 43; // 4 * ceil(ID_LENGTH / 3)
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ID([u8; ID_LENGTH]);
+pub struct Id([u8; ID_LENGTH]);
 
-impl ID {
-    pub fn from_slice<T: AsRef<[u8]>>(s: T) -> Option<ID> {
-        let s = s.as_ref();
+impl FromStr for Id {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.len() != ENCODED_ID_LENGTH {
-            return None;
+            bail!("Incorrect length for ID");
         }
-        let mut id = ID([0; ID_LENGTH]);
-        if URL_SAFE_NO_PAD.decode_slice(s, &mut id.0[..]).is_err() {
-            return None;
+        let mut id_bytes = [0; ID_LENGTH];
+        if URL_SAFE_NO_PAD.decode_slice(s, &mut id_bytes).is_err() {
+            bail!("Bad encoding for ID");
         }
-        Some(id)
+        Ok(Id(id_bytes))
     }
 }
 
-impl Distribution<ID> for Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ID {
-        ID(rng.gen())
+impl Distribution<Id> for Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Id {
+        Id(rng.gen())
     }
 }
 
-impl Display for ID {
+impl Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", Base64Display::new(&self.0, &URL_SAFE_NO_PAD))
     }
@@ -104,17 +104,18 @@ impl Display for ID {
 
 #[cfg(test)]
 mod tests {
-    use super::ID;
+    use std::str::FromStr;
+    use super::Id;
     use rand::random;
 
     #[test]
     fn id_generation() {
-        assert_ne!(random::<ID>(), random::<ID>());
+        assert_ne!(random::<Id>(), random::<Id>());
     }
 
     #[test]
-    fn id_slice_conversion() {
-        let id: ID = random();
-        assert_eq!(ID::from_slice(id.to_string()), Some(id));
+    fn id_string_roundtrip() {
+        let id: Id = random();
+        assert_eq!(Id::from_str(&id.to_string()).unwrap(), id);
     }
 }

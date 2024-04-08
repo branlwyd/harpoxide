@@ -4,6 +4,7 @@ authors = ["Brandon Pitman <bran@bran.land>"]
 edition = "2021"
 
 [dependencies]
+anyhow = "1"
 base64 = "0.22"
 prost = "0.12"
 rand = "0.8"
