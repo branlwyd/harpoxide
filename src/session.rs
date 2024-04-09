@@ -28,8 +28,8 @@ impl Handler {
         }
     }
 
-    pub fn new_session(&self, passphrase: &str) -> Result<Arc<Session>, secret::Error> {
-        let store = self.vault.unlock(passphrase)?;
+    pub async fn new_session(&self, passphrase: &str) -> Result<Arc<Session>, secret::Error> {
+        let store = self.vault.unlock(passphrase).await?;
 
         let mut sessions = self.sessions.lock().unwrap();
         loop {

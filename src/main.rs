@@ -21,7 +21,8 @@ pub mod proto {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     sodiumoxide::init().unwrap();
 
     let key = {
@@ -29,8 +30,12 @@ fn main() {
         Key::decode(key_bytes.as_ref()).unwrap()
     };
     let vault = Vault::new("tests/assets/passwords.sbox", key).unwrap();
-    let store = vault.unlock("password").unwrap();
-    for entry in store.list().unwrap() {
-        println!("{}\n===\n{}===\n\n", entry, store.get(&entry).unwrap());
+    let store = vault.unlock("password").await.unwrap();
+    for entry in store.list().await.unwrap() {
+        println!(
+            "{}\n===\n{}===\n\n",
+            entry,
+            store.get(&entry).await.unwrap()
+        );
     }
 }

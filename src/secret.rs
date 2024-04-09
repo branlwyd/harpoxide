@@ -1,13 +1,14 @@
 use crate::proto::secret::{key, Entry, Key, SecretboxKey};
 use anyhow::{anyhow, Context};
 use prost::Message as _;
-use sodiumoxide::{crypto::secretbox, utils::memzero};
+use sodiumoxide::crypto::secretbox;
 use std::{
-    fs,
     io::Write,
+    panic,
     path::{Component, Path, PathBuf},
 };
 use thiserror::Error;
+use tokio::{fs, task};
 use walkdir::WalkDir;
 
 const FILE_EXTENSION: &str = "harp";
@@ -35,36 +36,36 @@ impl Vault {
     }
 
     /// Attempts to open the vault. On success, a Store instance is returned.
-    pub fn unlock(&self, passphrase: &str) -> Result<Store, Error> {
-        // Derive the key-encryption key (KEK).
-        let mut kek_bytes = [0; secretbox::KEYBYTES];
-        let log2_n = (self.key.n as f64).log2() as u8; // TODO: check that N is a power of 2 before applying log_2.
-        let params = scrypt::Params::new(
-            log2_n,
-            self.key.r as u32,
-            self.key.p as u32,
-            secretbox::KEYBYTES,
-        )
-        .map_err(|err| anyhow!("scrypt parameters: {}", err))?;
-        scrypt::scrypt(passphrase.as_ref(), &self.key.salt, &params, &mut kek_bytes)
-            .map_err(|err| anyhow!("scrypt: {}", err))?;
-        let kek = secretbox::Key::from_slice(&kek_bytes)
-            .ok_or_else(|| anyhow!("KEK length incorrect"))?;
-        memzero(&mut kek_bytes);
+    pub async fn unlock(&self, passphrase: &str) -> Result<Store, Error> {
+        spawn_blocking({
+            let key = self.key.clone();
+            let location = self.location.clone();
+            let passphrase = passphrase.to_string();
 
-        // Decrypt the encryption key (EK) using the derived KEK.
-        let nonce = secretbox::Nonce::from_slice(&self.key.encrypted_key_nonce)
-            .ok_or_else(|| anyhow!("Nonce length incorrect"))?;
-        let mut ek_bytes = secretbox::open(&self.key.encrypted_key, &nonce, &kek)
-            .map_err(|_| Error::InvalidPassphrase)?;
-        let key = secretbox::Key::from_slice(&ek_bytes)
-            .ok_or_else(|| anyhow!("Encrypted key length incorrect"))?;
-        memzero(&mut ek_bytes);
+            move || {
+                // Derive the key-encryption key (KEK).
+                let mut kek_bytes = [0; secretbox::KEYBYTES];
+                let log2_n = (key.n as f64).log2() as u8; // TODO: check that N is a power of 2 before applying log_2.
+                let params =
+                    scrypt::Params::new(log2_n, key.r as u32, key.p as u32, secretbox::KEYBYTES)
+                        .map_err(|err| anyhow!("scrypt parameters: {}", err))?;
+                scrypt::scrypt(passphrase.as_ref(), &key.salt, &params, &mut kek_bytes)
+                    .map_err(|err| anyhow!("scrypt: {}", err))?;
+                let kek = secretbox::Key::from_slice(&kek_bytes)
+                    .ok_or_else(|| anyhow!("KEK length incorrect"))?;
 
-        Ok(Store {
-            location: self.location.clone(),
-            key,
+                // Decrypt the encryption key (EK) using the derived KEK.
+                let nonce = secretbox::Nonce::from_slice(&key.encrypted_key_nonce)
+                    .ok_or_else(|| anyhow!("Nonce length incorrect"))?;
+                let ek_bytes = secretbox::open(&key.encrypted_key, &nonce, &kek)
+                    .map_err(|_| Error::InvalidPassphrase)?;
+                let key = secretbox::Key::from_slice(&ek_bytes)
+                    .ok_or_else(|| anyhow!("Encrypted key length incorrect"))?;
+
+                Ok(Store { location, key })
+            }
         })
+        .await
     }
 }
 
@@ -83,40 +84,46 @@ pub struct Store {
 
 impl Store {
     /// Retrieves all of the entries in the Store.
-    pub fn list(&self) -> Result<Vec<String>, Error> {
-        let mut result = Vec::new();
-        for entry in WalkDir::new(&self.location) {
-            let entry = entry.context("Couldn't walk directory")?;
+    pub async fn list(&self) -> Result<Vec<String>, Error> {
+        spawn_blocking({
+            let location = self.location.clone();
 
-            if !entry.file_type().is_file() {
-                continue;
+            move || {
+                let mut result = Vec::new();
+                for entry in WalkDir::new(&location) {
+                    let entry = entry.context("Couldn't walk directory")?;
+
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    let mut path = entry.into_path();
+                    if path.extension() != Some(FILE_EXTENSION.as_ref()) {
+                        continue;
+                    }
+                    path = path
+                        .strip_prefix(&location)
+                        .with_context(|| format!("Couldn't strip prefix from {}", path.display()))?
+                        .with_extension("");
+                    let mut entry_name = String::from("/");
+                    entry_name.push_str(path.to_str().ok_or_else(|| {
+                        anyhow!("Couldn't convert path to string: {}", path.display())
+                    })?);
+                    result.push(entry_name);
+                }
+                Ok(result)
             }
-            let mut path = entry.into_path();
-            if path.extension() != Some(FILE_EXTENSION.as_ref()) {
-                continue;
-            }
-            path = path
-                .strip_prefix(&self.location)
-                .with_context(|| format!("Couldn't strip prefix from {}", path.display()))?
-                .with_extension("");
-            let mut entry_name = String::from("/");
-            entry_name.push_str(
-                path.to_str().ok_or_else(|| {
-                    anyhow!("Couldn't convert path to string: {}", path.display())
-                })?,
-            );
-            result.push(entry_name);
-        }
-        Ok(result)
+        })
+        .await
     }
 
     /// Gets an entry's contents given its name.
-    pub fn get(&self, entry: &str) -> Result<String, Error> {
+    pub async fn get(&self, entry: &str) -> Result<String, Error> {
         // Read entry content from disk.
         let entry_pb = {
             let filename = self.filename_for_entry(entry)?;
-            let entry_bytes =
-                fs::read(filename).with_context(|| format!("Entry {entry} couldn't be read"))?;
+            let entry_bytes = fs::read(filename)
+                .await
+                .with_context(|| format!("Entry {entry} couldn't be read"))?;
             Entry::decode(entry_bytes.as_ref())
                 .with_context(|| format!("Entry {entry} couldn't be parsed"))?
         };
@@ -131,7 +138,7 @@ impl Store {
     }
 
     /// Updates an entry's contents to the given value, or creates a new entry.
-    pub fn put(&self, entry: &str, content: &str) -> Result<(), Error> {
+    pub async fn put(&self, entry: &str, content: &str) -> Result<(), Error> {
         let filename = self.filename_for_entry(entry)?;
 
         // Encrypt content & build Entry proto.
@@ -145,38 +152,58 @@ impl Store {
         // Atomically write the new file content.
         let path = filename
             .parent()
-            .ok_or_else(|| anyhow!("Entry {entry} has no parent"))?;
-        fs::create_dir_all(path)
+            .ok_or_else(|| anyhow!("Entry {entry} has no parent"))?
+            .to_owned();
+        fs::create_dir_all(&path)
+            .await
             .with_context(|| format!("Couldn't create dir {}", path.display()))?;
-        let mut temp_file = tempfile::NamedTempFile::new_in(path)
-            .with_context(|| format!("Couldn't create temporary file for entry {entry}"))?;
-        temp_file
-            .write_all(&entry_bytes)
-            .with_context(|| format!("Couldn't write entry {entry} to temporary file"))?;
-        temp_file
-            .persist(filename)
-            .with_context(|| format!("Couldn't persist entry {entry}"))?;
+
+        spawn_blocking({
+            move || -> Result<(), Error> {
+                let mut temp_file = tempfile::NamedTempFile::new_in(path)
+                    .context("Couldn't create temporary file")?;
+                temp_file
+                    .write_all(&entry_bytes)
+                    .context("Couldn't write to temporary file")?;
+                temp_file
+                    .persist(filename)
+                    .context("Couldn't persist temporary file")?;
+                Ok(())
+            }
+        })
+        .await
+        .with_context(|| format!("Couldn't write entry {entry}"))?;
         Ok(())
     }
 
     /// Removes an entry by name.
-    pub fn delete(&self, entry: &str) -> Result<(), Error> {
+    pub async fn delete(&self, entry: &str) -> Result<(), Error> {
         // Delete file for entry.
         let filename = self.filename_for_entry(entry)?;
-        fs::remove_file(&filename).with_context(|| format!("Couldn't delete entry {entry}"))?;
+        fs::remove_file(&filename)
+            .await
+            .with_context(|| format!("Couldn't delete entry {entry}"))?;
 
         // Clean up any newly-empty directories.
         for ancestor in filename.ancestors().skip(1) {
             if ancestor == self.location {
                 break; // Never delete the base directory of the store.
             }
-            let mut it = ancestor
-                .read_dir()
-                .with_context(|| format!("Couldn't read dir {}", ancestor.display()))?;
-            if it.next().is_some() {
+            let mut it = fs::read_dir(ancestor)
+                .await
+                .with_context(|| format!("Couldn't read directory {}", ancestor.display()))?;
+            if it
+                .next_entry()
+                .await
+                .with_context(|| {
+                    format!("Couldn't read directory entry from {}", ancestor.display())
+                })?
+                .is_some()
+            {
                 break; // Directory is not empty.
             }
             fs::remove_dir(ancestor)
+                .await
                 .with_context(|| format!("Couldn't delete empty dir {}", ancestor.display()))?;
         }
         Ok(())
@@ -209,6 +236,18 @@ impl Store {
     }
 }
 
+async fn spawn_blocking<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match task::spawn_blocking(f).await {
+        Ok(rslt) => rslt,
+        Err(join_error) => panic::resume_unwind(join_error.into_panic()),
+    }
+}
+
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("invalid passphrase")]
@@ -234,65 +273,65 @@ mod tests {
     const BETA_CONTENT: &str = "Beta password\nsecond line\nthird line\n";
     const GAMMA_CONTENT: &str = "Gamma password\na second line\n";
 
-    #[test]
-    fn vault() {
+    #[tokio::test]
+    async fn vault() {
         let (vault, _dir) = create_vault();
 
         // Correct password gets a Store.
-        vault.unlock(CORRECT_PASSWORD).unwrap();
+        vault.unlock(CORRECT_PASSWORD).await.unwrap();
 
         // Incorrect password gets an InvalidPassphrase error.
         let incorrect_password = format!("incorrect_{}", CORRECT_PASSWORD);
         assert!(matches!(
-            vault.unlock(&incorrect_password).unwrap_err(),
+            vault.unlock(&incorrect_password).await.unwrap_err(),
             Error::InvalidPassphrase
         ));
     }
 
-    #[test]
-    fn store() {
+    #[tokio::test]
+    async fn store() {
         let (vault, _dir) = create_vault();
-        let store = vault.unlock(CORRECT_PASSWORD).unwrap();
+        let store = vault.unlock(CORRECT_PASSWORD).await.unwrap();
 
         // Validate the initial state.
-        let mut entries = store.list().unwrap();
+        let mut entries = store.list().await.unwrap();
         entries.sort();
         assert_eq!(entries, Vec::from(["/Alpha", "/Beta", "/Gamma"]));
-        assert_eq!(store.get("/Alpha").unwrap(), ALPHA_CONTENT);
-        assert_eq!(store.get("/Beta").unwrap(), BETA_CONTENT);
-        assert_eq!(store.get("/Gamma").unwrap(), GAMMA_CONTENT);
+        assert_eq!(store.get("/Alpha").await.unwrap(), ALPHA_CONTENT);
+        assert_eq!(store.get("/Beta").await.unwrap(), BETA_CONTENT);
+        assert_eq!(store.get("/Gamma").await.unwrap(), GAMMA_CONTENT);
 
         // Delete an entry and check that it's gone.
-        store.delete("/Beta").unwrap();
-        let mut entries = store.list().unwrap();
+        store.delete("/Beta").await.unwrap();
+        let mut entries = store.list().await.unwrap();
         entries.sort();
         assert_eq!(entries, Vec::from(["/Alpha", "/Gamma"]));
 
         // Add an entry and check that it shows up & has the correct contents.
         const DELTA_CONTENT: &str = "Delta password\nsecond line\n";
-        store.put("/Delta", DELTA_CONTENT).unwrap();
-        let mut entries = store.list().unwrap();
+        store.put("/Delta", DELTA_CONTENT).await.unwrap();
+        let mut entries = store.list().await.unwrap();
         entries.sort();
         assert_eq!(entries, Vec::from(["/Alpha", "/Delta", "/Gamma"]));
-        assert_eq!(store.get("/Delta").unwrap(), DELTA_CONTENT);
+        assert_eq!(store.get("/Delta").await.unwrap(), DELTA_CONTENT);
 
         // Add an entry in a directory and check that it shows up & has the correct contents.DELTA_CONTENT
         const EPSILON_CONTENT: &str = "Epsilon password\n";
-        store.put("/Dir/Epsilon", EPSILON_CONTENT).unwrap();
-        let mut entries = store.list().unwrap();
+        store.put("/Dir/Epsilon", EPSILON_CONTENT).await.unwrap();
+        let mut entries = store.list().await.unwrap();
         entries.sort();
         assert_eq!(
             entries,
             Vec::from(["/Alpha", "/Delta", "/Dir/Epsilon", "/Gamma"])
         );
-        assert_eq!(store.get("/Dir/Epsilon").unwrap(), EPSILON_CONTENT);
+        assert_eq!(store.get("/Dir/Epsilon").await.unwrap(), EPSILON_CONTENT);
 
         // Delete all entries, then check that the entries are gone.
-        store.delete("/Alpha").unwrap();
-        store.delete("/Delta").unwrap();
-        store.delete("/Dir/Epsilon").unwrap();
-        store.delete("/Gamma").unwrap();
-        let mut entries = store.list().unwrap();
+        store.delete("/Alpha").await.unwrap();
+        store.delete("/Delta").await.unwrap();
+        store.delete("/Dir/Epsilon").await.unwrap();
+        store.delete("/Gamma").await.unwrap();
+        let mut entries = store.list().await.unwrap();
         entries.sort();
         assert_eq!(entries, Vec::<String>::new());
     }
